@@ -2,7 +2,6 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     ContextTypes,
-    ConversationHandler,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
@@ -13,11 +12,6 @@ from database import Database
 logger = logging.getLogger(__name__)
 
 db = Database()
-
-# Состояния ConversationHandler
-ADDING_TASK, EDITING_TASK = range(2)
-
-# --- Вспомогательные функции ---
 
 NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
@@ -61,10 +55,10 @@ def format_full_list(tasks: list, filter: str | None = None) -> str:
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     buttons = [
-        ["📋 /list", "➕ /add"],
-        ["❌ /active", "✅ /completed"],
-        ["📊 /stats", "🗑️ /clear"],
-        ["❓ /help"],
+        ["/list", "/add"],
+        ["/active", "/completed"],
+        ["/stats", "/clear"],
+        ["/help"],
     ]
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
@@ -74,6 +68,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db.register_user(user.id, user.username)
+    context.user_data.clear()
     logger.info("Пользователь %s запустил бота", user.id)
     await update.message.reply_text(
         f"👋 Привет, {user.first_name}!\n\n"
@@ -102,7 +97,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats — статистика по задачам\n"
         "/clear — удалить все задачи\n"
         "/cancel — отменить текущее действие\n\n"
-        "💡 В списке задач нажимай кнопки под каждой задачей:\n"
+        "💡 В списке задач нажимай кнопки:\n"
         "✅ — отметить выполненной\n"
         "↩️ — вернуть в активные\n"
         "🗑️ — удалить задачу\n"
@@ -155,71 +150,57 @@ async def completed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await list_tasks(update, context, filter="completed")
 
 
-# --- Диалог добавления задачи ---
+# --- /add и редактирование через user_data ---
 
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📝 Введи текст задачи:")
-    return ADDING_TASK
-
-
-async def receive_task_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if not text:
-        await update.message.reply_text("⚠️ Текст не может быть пустым. Попробуй ещё раз:")
-        return ADDING_TASK
-    user_id = update.effective_user.id
-    task_id = db.add_task(user_id, text)
+    context.user_data['state'] = 'adding'
     await update.message.reply_text(
-        f"✅ Задача добавлена!\n\n📝 <b>{text}</b>\n\n"
-        "Смотри все задачи с помощью /list",
-        parse_mode="HTML",
+        "📝 Введи текст задачи:\n\n/cancel — отменить"
     )
-    return ConversationHandler.END
-
-
-# --- Диалог редактирования задачи ---
-
-async def edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    task_id = int(query.data.split(":")[1])
-    context.user_data["editing_task_id"] = task_id
-    task = db.get_task(task_id, query.from_user.id)
-    if not task:
-        await query.edit_message_text("⚠️ Задача не найдена.")
-        return ConversationHandler.END
-    await query.edit_message_text(
-        f"📝 Редактирую задачу:\n<b>{task['text']}</b>\n\nВведи новый текст:",
-        parse_mode="HTML",
-    )
-    return EDITING_TASK
-
-
-async def receive_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    new_text = update.message.text.strip()
-    if not new_text:
-        await update.message.reply_text("⚠️ Текст не может быть пустым. Попробуй ещё раз:")
-        return EDITING_TASK
-    task_id = context.user_data.get("editing_task_id")
-    user_id = update.effective_user.id
-    if db.edit_task(task_id, user_id, new_text):
-        await update.message.reply_text(
-            f"✅ Задача обновлена!\n\n📝 <b>{new_text}</b>",
-            parse_mode="HTML",
-        )
-    else:
-        await update.message.reply_text("⚠️ Не удалось обновить задачу.")
-    context.user_data.pop("editing_task_id", None)
-    return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("❌ Действие отменено.")
-    return ConversationHandler.END
 
 
-# --- Команда /clear ---
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state = context.user_data.get('state')
+    if not state:
+        return
+
+    text = update.message.text.strip()
+    user_id = update.effective_user.id
+
+    if state == 'adding':
+        if not text:
+            await update.message.reply_text("⚠️ Текст не может быть пустым. Попробуй ещё раз:")
+            return
+        db.add_task(user_id, text)
+        context.user_data.clear()
+        logger.info("Пользователь %s добавил задачу: %s", user_id, text)
+        await update.message.reply_text(
+            f"✅ Задача добавлена!\n\n📝 <b>{text}</b>\n\n"
+            "Смотри все задачи с помощью /list",
+            parse_mode="HTML",
+        )
+
+    elif state == 'editing':
+        if not text:
+            await update.message.reply_text("⚠️ Текст не может быть пустым. Попробуй ещё раз:")
+            return
+        task_id = context.user_data.get('editing_task_id')
+        context.user_data.clear()
+        if db.edit_task(task_id, user_id, text):
+            await update.message.reply_text(
+                f"✅ Задача обновлена!\n\n📝 <b>{text}</b>",
+                parse_mode="HTML",
+            )
+        else:
+            await update.message.reply_text("⚠️ Не удалось обновить задачу.")
+
+
+# --- /clear ---
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -240,7 +221,7 @@ async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# --- Обработчики inline-кнопок ---
+# --- Inline-кнопки ---
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -249,7 +230,20 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     try:
-        if data.startswith("done:") or data.startswith("undo:"):
+        if data.startswith("edit:"):
+            task_id = int(data.split(":")[1])
+            task = db.get_task(task_id, user_id)
+            if not task:
+                await query.edit_message_text("⚠️ Задача не найдена.")
+                return
+            context.user_data['state'] = 'editing'
+            context.user_data['editing_task_id'] = task_id
+            await query.edit_message_text(
+                f"📝 Редактирую задачу:\n<b>{task['text']}</b>\n\nВведи новый текст:\n/cancel — отменить",
+                parse_mode="HTML",
+            )
+
+        elif data.startswith("done:") or data.startswith("undo:"):
             task_id = int(data.split(":")[1])
             db.toggle_task(task_id, user_id)
             tasks = db.get_tasks(user_id)
@@ -291,29 +285,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ Произошла ошибка. Попробуй ещё раз.")
 
 
-# --- Сборка хендлеров ---
-
-def get_conversation_handler() -> ConversationHandler:
-    return ConversationHandler(
-        entry_points=[
-            CommandHandler("add", add_start),
-            CallbackQueryHandler(edit_start, pattern=r"^edit:\d+$"),
-        ],
-        states={
-            ADDING_TASK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_task_text)],
-            EDITING_TASK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_edit_text)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
+# --- Регистрация хендлеров ---
 
 def register_handlers(application):
-    application.add_handler(get_conversation_handler())
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("add", add_start))
+    application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(CommandHandler("list", list_command))
     application.add_handler(CommandHandler("active", active_command))
     application.add_handler(CommandHandler("completed", completed_command))
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("clear", clear_command))
     application.add_handler(CallbackQueryHandler(callback_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
