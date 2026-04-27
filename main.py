@@ -13,7 +13,11 @@ def main():
     register_handlers(application)
 
     logger.info("Бот запущен. Ожидание сообщений...")
-    application.run_polling(drop_pending_updates=True)
+    application.run_polling(
+        drop_pending_updates=True,
+        poll_interval=0.0,
+        timeout=10,
+    )
 
 
 if __name__ == "__main__":
