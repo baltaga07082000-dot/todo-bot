@@ -23,15 +23,10 @@ def num_emoji(n: int) -> str:
 def build_list_keyboard(tasks: list) -> InlineKeyboardMarkup:
     rows = []
     for task in tasks:
-        toggle_btn = (
-            InlineKeyboardButton("↩️", callback_data=f"undo:{task['id']}")
-            if task["completed"]
-            else InlineKeyboardButton("✅", callback_data=f"done:{task['id']}")
-        )
         rows.append([
-            toggle_btn,
+            InlineKeyboardButton("✅ Выполнил", callback_data=f"done:{task['id']}"),
+            InlineKeyboardButton("❌ Не выполнил", callback_data=f"notdone:{task['id']}"),
             InlineKeyboardButton("🗑️", callback_data=f"delete:{task['id']}"),
-            InlineKeyboardButton("📝", callback_data=f"edit:{task['id']}"),
         ])
     return InlineKeyboardMarkup(rows)
 
@@ -243,9 +238,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
             )
 
-        elif data.startswith("done:") or data.startswith("undo:"):
+        elif data.startswith("done:"):
             task_id = int(data.split(":")[1])
-            db.toggle_task(task_id, user_id)
+            task = db.get_task(task_id, user_id)
+            if task and not task["completed"]:
+                db.toggle_task(task_id, user_id)
+            tasks = db.get_tasks(user_id)
+            if tasks:
+                await query.edit_message_text(
+                    format_full_list(tasks),
+                    parse_mode="HTML",
+                    reply_markup=build_list_keyboard(tasks),
+                )
+            else:
+                await query.edit_message_text("📭 Задач больше нет. Добавь новую с помощью /add!")
+
+        elif data.startswith("notdone:"):
+            task_id = int(data.split(":")[1])
+            task = db.get_task(task_id, user_id)
+            if task and task["completed"]:
+                db.toggle_task(task_id, user_id)
             tasks = db.get_tasks(user_id)
             if tasks:
                 await query.edit_message_text(
