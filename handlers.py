@@ -26,21 +26,37 @@ def num_emoji(n: int) -> str:
     return NUMBER_EMOJIS[n - 1] if 1 <= n <= 10 else f"{n}."
 
 
-def build_task_keyboard(task_id: int, completed: bool) -> InlineKeyboardMarkup:
-    toggle_btn = (
-        InlineKeyboardButton("↩️ Вернуть", callback_data=f"undo:{task_id}")
-        if completed
-        else InlineKeyboardButton("✅ Выполнить", callback_data=f"done:{task_id}")
-    )
-    return InlineKeyboardMarkup([
-        [toggle_btn, InlineKeyboardButton("🗑️ Удалить", callback_data=f"delete:{task_id}"),
-         InlineKeyboardButton("📝 Редактировать", callback_data=f"edit:{task_id}")]
-    ])
+def build_list_keyboard(tasks: list) -> InlineKeyboardMarkup:
+    rows = []
+    for task in tasks:
+        toggle_btn = (
+            InlineKeyboardButton("↩️", callback_data=f"undo:{task['id']}")
+            if task["completed"]
+            else InlineKeyboardButton("✅", callback_data=f"done:{task['id']}")
+        )
+        rows.append([
+            toggle_btn,
+            InlineKeyboardButton("🗑️", callback_data=f"delete:{task['id']}"),
+            InlineKeyboardButton("📝", callback_data=f"edit:{task['id']}"),
+        ])
+    return InlineKeyboardMarkup(rows)
 
 
 def format_task_line(index: int, task: dict) -> str:
     status = "✅" if task["completed"] else "❌"
     return f"{num_emoji(index)} {status} {task['text']}"
+
+
+def format_full_list(tasks: list, filter: str | None = None) -> str:
+    header = {
+        "active": f"❌ <b>Активные задачи ({len(tasks)}):</b>",
+        "completed": f"✅ <b>Выполненные задачи ({len(tasks)}):</b>",
+    }.get(filter, f"📋 <b>Все твои задачи ({len(tasks)}):</b>")
+    lines = [header, ""]
+    for i, task in enumerate(tasks, 1):
+        lines.append(format_task_line(i, task))
+    lines += ["", "✅ выполнить  🗑️ удалить  📝 редактировать"]
+    return "\n".join(lines)
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -120,18 +136,11 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE, filter:
         )
         return
 
-    header = {
-        "active": f"❌ Активные задачи ({len(tasks)}):",
-        "completed": f"✅ Выполненные задачи ({len(tasks)}):",
-    }.get(filter, f"📋 Все твои задачи ({len(tasks)}):")
-
-    await update.message.reply_text(header)
-
-    for i, task in enumerate(tasks, start=1):
-        await update.message.reply_text(
-            format_task_line(i, task),
-            reply_markup=build_task_keyboard(task["id"], bool(task["completed"])),
-        )
+    await update.message.reply_text(
+        format_full_list(tasks, filter),
+        parse_mode="HTML",
+        reply_markup=build_list_keyboard(tasks),
+    )
 
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -242,23 +251,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if data.startswith("done:") or data.startswith("undo:"):
             task_id = int(data.split(":")[1])
-            if db.toggle_task(task_id, user_id):
-                task = db.get_task(task_id, user_id)
-                action = "выполнена ✅" if task["completed"] else "возвращена в активные ↩️"
+            db.toggle_task(task_id, user_id)
+            tasks = db.get_tasks(user_id)
+            if tasks:
                 await query.edit_message_text(
-                    f"Задача <b>{task['text']}</b> — {action}",
+                    format_full_list(tasks),
                     parse_mode="HTML",
-                    reply_markup=build_task_keyboard(task_id, bool(task["completed"])),
+                    reply_markup=build_list_keyboard(tasks),
                 )
             else:
-                await query.edit_message_text("⚠️ Задача не найдена.")
+                await query.edit_message_text("📭 Задач больше нет. Добавь новую с помощью /add!")
 
         elif data.startswith("delete:"):
             task_id = int(data.split(":")[1])
             task = db.get_task(task_id, user_id)
             task_text = task["text"] if task else "?"
             if db.delete_task(task_id, user_id):
-                await query.edit_message_text(f"🗑️ Задача <b>{task_text}</b> удалена.", parse_mode="HTML")
+                tasks = db.get_tasks(user_id)
+                if tasks:
+                    await query.edit_message_text(
+                        f"🗑️ <b>{task_text}</b> удалена.\n\n" + format_full_list(tasks),
+                        parse_mode="HTML",
+                        reply_markup=build_list_keyboard(tasks),
+                    )
+                else:
+                    await query.edit_message_text("🗑️ Задача удалена. Список пуст!")
             else:
                 await query.edit_message_text("⚠️ Задача не найдена.")
 
